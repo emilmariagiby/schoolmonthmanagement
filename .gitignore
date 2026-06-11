@@ -1,0 +1,20 @@
+# Root gitignore for schoolmonthmanagement project
+
+# Expo / React Native App ignores
+school-report-app/node_modules/
+school-report-app/.expo/
+school-report-app/dist/
+school-report-app/web-build/
+school-report-app/.env*
+school-report-app/npm-debug.log*
+school-report-app/yarn-debug.log*
+school-report-app/yarn-error.log*
+
+# System / OS ignores
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and databases
+*.log
+*.sqlite
