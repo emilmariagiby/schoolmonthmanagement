@@ -1,0 +1,12 @@
+{
+  "name": "schoolmonthmanagement-root",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "npm run start --prefix school-report-app",
+    "start": "npm run start --prefix school-report-app",
+    "web": "npm run web --prefix school-report-app",
+    "android": "npm run android --prefix school-report-app",
+    "ios": "npm run ios --prefix school-report-app"
+  }
+}
