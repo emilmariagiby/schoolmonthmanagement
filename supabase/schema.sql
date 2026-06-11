@@ -1,35 +1,20 @@
 -- Database Schema for School Performance Report App
 
--- Enable UUID extension if not enabled
+-- Enable pgcrypto for password hashing in SQL
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- Create Table: APPROVED_STUDENTS (Pre-approved roster uploaded by Admin)
-CREATE TABLE IF NOT EXISTS public.approved_students (
-    mobile_no TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    class TEXT NOT NULL,
-    section TEXT NOT NULL,
-    parent_email TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Create Table: APPROVED_INSTRUCTORS (Pre-approved instructors uploaded by Admin)
-CREATE TABLE IF NOT EXISTS public.approved_instructors (
-    email TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
 
 -- Create Table: PROFILES
 CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID REFERENCES auth.users(id) ON DELETE CASCADE PRIMARY KEY,
     name TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('admin', 'instructor', 'student')),
-    class TEXT, -- e.g., '11', '12' (applicable to students)
-    section TEXT, -- e.g., 'A', 'B' (applicable to students)
-    mobile_no TEXT UNIQUE, -- used as login and identifier
-    parent_email TEXT, -- email to send report summaries to
-    signature_url TEXT, -- for instructors/teachers
+    class TEXT, -- e.g., '11', '12'
+    section TEXT,
+    mobile_no TEXT UNIQUE,
+    parent_email TEXT,
+    signature_url TEXT,
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -40,7 +25,7 @@ CREATE TABLE IF NOT EXISTS public.system_settings (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Insert a default system setting row if not exists
+-- Insert default system settings row
 INSERT INTO public.system_settings (id, principal_signature_url)
 VALUES ('00000000-0000-0000-0000-000000000000', NULL)
 ON CONFLICT (id) DO NOTHING;
@@ -66,8 +51,8 @@ CREATE TABLE IF NOT EXISTS public.reports (
     subject_5_name TEXT NOT NULL,
     subject_5_score NUMERIC CHECK (subject_5_score >= 0 AND subject_5_score <= 100),
     
-    lab_attendance NUMERIC CHECK (lab_attendance >= 0 AND lab_attendance <= 100), -- percentage
-    discipline TEXT, -- e.g. 'Excellent', 'A', 'B'
+    lab_attendance NUMERIC CHECK (lab_attendance >= 0 AND lab_attendance <= 100),
+    discipline TEXT,
     class_teacher_remark TEXT,
     
     created_by UUID REFERENCES public.profiles(id),
@@ -75,28 +60,13 @@ CREATE TABLE IF NOT EXISTS public.reports (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     
-    -- Ensure a student only has one report per period
     UNIQUE(student_id, period)
 );
 
--- Enable Row Level Security (RLS)
-ALTER TABLE public.approved_students ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.approved_instructors ENABLE ROW LEVEL SECURITY;
+-- Enable RLS
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.system_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
-
--- Approved Students Policies (Only Admin can manage)
-CREATE POLICY admin_approved_stud_policy ON public.approved_students
-    FOR ALL USING (
-        (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'admin'
-    );
-
--- Approved Instructors Policies (Only Admin can manage)
-CREATE POLICY admin_approved_inst_policy ON public.approved_instructors
-    FOR ALL USING (
-        (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'admin'
-    );
 
 -- Profiles Policies
 CREATE POLICY profiles_select_policy ON public.profiles
@@ -149,81 +119,135 @@ CREATE POLICY reports_delete_policy ON public.reports
         (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'admin'
     );
 
+-- Trigger: Automatically mirror auth user metadata into profiles table
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger AS $$
-DECLARE
-    user_role TEXT;
-    student_record RECORD;
-    instructor_record RECORD;
-    user_mobile TEXT;
-    user_email TEXT;
 BEGIN
-    user_email := new.email;
-    user_mobile := COALESCE(new.raw_user_meta_data->>'mobile_no', SPLIT_PART(user_email, '@', 1));
-    user_role := new.raw_user_meta_data->>'role';
-
-    -- 1. DYNAMIC ROLE INFERENCE
-    -- If no role is specified (e.g. dashboard signup), infer it from email & rosters
-    IF user_role IS NULL THEN
-        -- Check if email is in approved instructors
-        SELECT * INTO instructor_record FROM public.approved_instructors WHERE email = user_email;
-        IF FOUND THEN
-            user_role := 'instructor';
-        -- Check if it's the admin email
-        ELSIF user_email = 'admin@school.edu' OR user_email LIKE 'admin@%' THEN
-            user_role := 'admin';
-        ELSE
-            user_role := 'student';
-        END IF;
-    END IF;
-
-    -- 2. ROLE PROCESSING
-    -- Admin Flow
-    IF user_role = 'admin' THEN
-        INSERT INTO public.profiles (id, name, role, mobile_no)
-        VALUES (new.id, COALESCE(new.raw_user_meta_data->>'name', 'Root Admin'), 'admin', user_mobile)
-        ON CONFLICT (id) DO NOTHING;
-        RETURN NEW;
-    END IF;
-
-    -- Instructor Registration Flow
-    IF user_role = 'instructor' THEN
-        SELECT * INTO instructor_record FROM public.approved_instructors WHERE email = user_email;
-        IF NOT FOUND THEN
-            RAISE EXCEPTION 'This email is not approved by school administration.';
-        END IF;
-        
-        INSERT INTO public.profiles (id, name, role)
-        VALUES (new.id, instructor_record.name, 'instructor')
-        ON CONFLICT (id) DO NOTHING;
-        RETURN NEW;
-    END IF;
-
-    -- Student Registration Flow
-    IF user_role = 'student' THEN
-        SELECT * INTO student_record FROM public.approved_students WHERE mobile_no = user_mobile;
-        IF NOT FOUND THEN
-            RAISE EXCEPTION 'This mobile number is not registered on the student roster. Contact admin.';
-        END IF;
-        
-        INSERT INTO public.profiles (id, name, role, class, section, mobile_no, parent_email)
-        VALUES (
-            new.id, 
-            student_record.name, 
-            'student', 
-            student_record.class, 
-            student_record.section, 
-            student_record.mobile_no, 
-            student_record.parent_email
-        )
-        ON CONFLICT (id) DO NOTHING;
-        RETURN NEW;
-    END IF;
-
-    RETURN NEW;
+  INSERT INTO public.profiles (id, name, role, class, section, mobile_no, parent_email)
+  VALUES (
+    new.id,
+    COALESCE(new.raw_user_meta_data->>'name', 'New User'),
+    COALESCE(new.raw_user_meta_data->>'role', 'student'),
+    new.raw_user_meta_data->>'class',
+    new.raw_user_meta_data->>'section',
+    new.raw_user_meta_data->>'mobile_no',
+    new.raw_user_meta_data->>'parent_email'
+  )
+  ON CONFLICT (id) DO UPDATE
+  SET name = EXCLUDED.name,
+      role = EXCLUDED.role,
+      class = EXCLUDED.class,
+      section = EXCLUDED.section,
+      mobile_no = EXCLUDED.mobile_no,
+      parent_email = EXCLUDED.parent_email;
+  RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 CREATE OR REPLACE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- Secure RPC: Admin Create User Bypass
+CREATE OR REPLACE FUNCTION public.create_auth_user(
+    p_email TEXT,
+    p_password TEXT,
+    p_metadata JSONB
+)
+RETURNS UUID AS $$
+DECLARE
+    v_user_id UUID;
+    v_encrypted_pw TEXT;
+BEGIN
+    -- Verify caller is Admin
+    IF NOT EXISTS (
+        SELECT 1 FROM public.profiles 
+        WHERE id = auth.uid() AND role = 'admin'
+    ) THEN
+        RAISE EXCEPTION 'Unauthorized: Only administrators can create users.';
+    END IF;
+
+    v_user_id := uuid_generate_v4();
+    v_encrypted_pw := crypt(p_password, gen_salt('bf', 10));
+
+    -- Insert into auth.users
+    INSERT INTO auth.users (
+        instance_id,
+        id,
+        aud,
+        role,
+        email,
+        encrypted_password,
+        email_confirmed_at,
+        raw_app_meta_data,
+        raw_user_meta_data,
+        created_at,
+        updated_at,
+        confirmation_token,
+        recovery_token
+    ) VALUES (
+        '00000000-0000-0000-0000-000000000000',
+        v_user_id,
+        'authenticated',
+        'authenticated',
+        p_email,
+        v_encrypted_pw,
+        NOW(),
+        '{"provider":"email","providers":["email"]}'::jsonb,
+        p_metadata,
+        NOW(),
+        NOW(),
+        '',
+        ''
+    );
+
+    -- Insert into auth.identities
+    INSERT INTO auth.identities (
+        id,
+        user_id,
+        identity_data,
+        provider,
+        last_sign_in_at,
+        created_at,
+        updated_at
+    ) VALUES (
+        v_user_id::text,
+        v_user_id,
+        json_build_object('sub', v_user_id, 'email', p_email)::jsonb,
+        'email',
+        NOW(),
+        NOW(),
+        NOW()
+    );
+
+    RETURN v_user_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Secure RPC: Admin Reset User Password
+CREATE OR REPLACE FUNCTION public.reset_user_password(
+    p_user_id UUID,
+    p_new_password TEXT
+)
+RETURNS BOOLEAN AS $$
+DECLARE
+    v_encrypted_pw TEXT;
+BEGIN
+    -- Verify caller is Admin
+    IF NOT EXISTS (
+        SELECT 1 FROM public.profiles 
+        WHERE id = auth.uid() AND role = 'admin'
+    ) THEN
+        RAISE EXCEPTION 'Unauthorized: Only administrators can reset passwords.';
+    END IF;
+
+    v_encrypted_pw := crypt(p_new_password, gen_salt('bf', 10));
+
+    UPDATE auth.users
+    SET encrypted_password = v_encrypted_pw,
+        updated_at = NOW()
+    WHERE id = p_user_id;
+
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;

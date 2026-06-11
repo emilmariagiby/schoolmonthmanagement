@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Image,
   Alert,
+  Modal,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -37,19 +38,28 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
   const [importLogs, setImportLogs] = useState<string>('');
 
   // Roster Listing State
-  const [approvedStudents, setApprovedStudents] = useState<any[]>([]);
+  const [studentsList, setStudentsList] = useState<any[]>([]);
   const [loadingStudents, setLoadingStudents] = useState<boolean>(false);
 
   // Instructor Form State
   const [staffEmail, setStaffEmail] = useState<string>('');
   const [staffName, setStaffName] = useState<string>('');
-  const [approvedInstructors, setApprovedInstructors] = useState<any[]>([]);
+  const [instructorsList, setInstructorsList] = useState<any[]>([]);
   const [loadingStaff, setLoadingStaff] = useState<boolean>(false);
   const [savingStaff, setSavingStaff] = useState<boolean>(false);
 
+  // Password Management State
+  const [newPassword, setNewPassword] = useState<string>('');
+  const [changingPassword, setChangingPassword] = useState<boolean>(false);
+
+  // User Reset Password State
+  const [resetUser, setResetUser] = useState<any | null>(null);
+  const [resetPasswordVal, setResetPasswordVal] = useState<string>('');
+  const [resettingUserPw, setResettingUserPw] = useState<boolean>(false);
+
   useEffect(() => {
     fetchPrincipalSignature();
-    if (activeTab === 'roster') fetchRoster();
+    if (activeTab === 'roster') fetchStudents();
     if (activeTab === 'staff') fetchStaff();
   }, [activeTab]);
 
@@ -68,17 +78,18 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     }
   };
 
-  const fetchRoster = async () => {
+  const fetchStudents = async () => {
     setLoadingStudents(true);
     try {
       const { data, error } = await supabase
-        .from('approved_students')
+        .from('profiles')
         .select('*')
-        .order('created_at', { ascending: false });
+        .eq('role', 'student')
+        .order('name', { ascending: true });
       if (error) throw error;
-      setApprovedStudents(data || []);
+      setStudentsList(data || []);
     } catch (err: any) {
-      console.error('Error fetching student roster:', err.message);
+      console.error('Error fetching students:', err.message);
     } finally {
       setLoadingStudents(false);
     }
@@ -88,11 +99,12 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     setLoadingStaff(true);
     try {
       const { data, error } = await supabase
-        .from('approved_instructors')
+        .from('profiles')
         .select('*')
-        .order('created_at', { ascending: false });
+        .eq('role', 'instructor')
+        .order('name', { ascending: true });
       if (error) throw error;
-      setApprovedInstructors(data || []);
+      setInstructorsList(data || []);
     } catch (err: any) {
       console.error('Error fetching staff roster:', err.message);
     } finally {
@@ -100,7 +112,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     }
   };
 
-  // 1. Roster Import Handler
+  // 1. Roster Import Handler (Bulk Creates Auth Users)
   const handleSelectExcel = async () => {
     try {
       const res = await DocumentPicker.getDocumentAsync({
@@ -129,44 +141,72 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     if (parsedRoster.length === 0) return;
 
     setImporting(true);
-    setImportLogs('Initializing student roster bulk import...\n');
+    setImportLogs('Initializing student roster account generation...\n');
+
+    let successCount = 0;
+    let errorCount = 0;
+    let logs = '';
 
     try {
-      // Format payload for approved_students table
-      const payloads = parsedRoster.map((item) => ({
-        mobile_no: item.mobile_no,
-        name: item.name,
-        class: item.class,
-        section: item.section,
-        parent_email: item.parent_email,
-        created_at: new Date().toISOString(),
-      }));
+      for (const item of parsedRoster) {
+        // Call RPC function to create Auth account with password set to mobile number
+        const { data: userId, error: rpcErr } = await supabase.rpc('create_auth_user', {
+          p_email: `${item.mobile_no}@school.report`,
+          p_password: String(item.mobile_no),
+          p_metadata: {
+            role: 'student',
+            name: item.name,
+            class: String(item.class),
+            section: item.section,
+            mobile_no: String(item.mobile_no),
+            parent_email: item.parent_email,
+          },
+        });
 
-      // Insert/Upsert into Supabase
-      const { error } = await supabase.from('approved_students').upsert(payloads, {
-        onConflict: 'mobile_no',
-      });
+        if (rpcErr) {
+          // If user already exists in auth.users, just update their metadata
+          if (rpcErr.message.includes('already exists') || rpcErr.message.includes('unique constraint')) {
+            const { error: profileError } = await supabase
+              .from('profiles')
+              .update({
+                name: item.name,
+                class: String(item.class),
+                section: item.section,
+                parent_email: item.parent_email,
+              })
+              .eq('mobile_no', String(item.mobile_no));
 
-      if (error) throw error;
+            if (profileError) {
+              logs += `Row ${item.rowNumber} (${item.name}): Failed to update profile metadata: ${profileError.message}\n`;
+              errorCount++;
+            } else {
+              logs += `Row ${item.rowNumber} (${item.name}): Account already existed. Updated profile settings.\n`;
+              successCount++;
+            }
+          } else {
+            logs += `Row ${item.rowNumber} (${item.name}): Failed to create user: ${rpcErr.message}\n`;
+            errorCount++;
+          }
+        } else {
+          logs += `Row ${item.rowNumber} (${item.name}): User account created successfully. Default password: ${item.mobile_no}\n`;
+          successCount++;
+        }
+      }
 
-      setImportLogs(
-        (prev) =>
-          prev +
-          `✅ Roster upload complete.\nSuccessfully registered/updated ${payloads.length} students on approved roster.\n`
-      );
-      Alert.alert('Import Success', `${payloads.length} students pre-approved successfully.`);
+      setImportLogs(logs + `\n✅ Process complete. Success: ${successCount}, Errors: ${errorCount}\n`);
+      Alert.alert('Import Finished', `Created/updated ${successCount} student accounts.`);
       setParsedRoster([]);
       setExcelFile(null);
-      fetchRoster();
+      fetchStudents();
     } catch (err: any) {
-      setImportLogs((prev) => prev + `❌ Error occurred: ${err.message}\n`);
-      Alert.alert('Import Failed', err.message || 'An error occurred during upload.');
+      setImportLogs((prev) => prev + `❌ Fatal Error: ${err.message}\n`);
+      Alert.alert('Import Failed', err.message || 'An error occurred.');
     } finally {
       setImporting(false);
     }
   };
 
-  // 2. Instructor Onboarding Handler
+  // 2. Instructor Onboarding Handler (Creates Auth User)
   const handleAddStaff = async () => {
     const email = staffEmail.trim().toLowerCase();
     const name = staffName.trim();
@@ -178,17 +218,27 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
     setSavingStaff(true);
     try {
-      const { error } = await supabase.from('approved_instructors').upsert(
-        { email, name, created_at: new Date().toISOString() },
-        { onConflict: 'email' }
-      );
+      const { data, error } = await supabase.rpc('create_auth_user', {
+        p_email: email,
+        p_password: 'teacher123', // default teacher password
+        p_metadata: {
+          role: 'instructor',
+          name: name,
+        },
+      });
 
-      if (error) throw error;
-
-      Alert.alert('Success', `Instructor ${name} pre-approved successfully.`);
-      setStaffEmail('');
-      setStaffName('');
-      fetchStaff();
+      if (error) {
+        if (error.message.includes('already exists') || error.message.includes('unique constraint')) {
+          Alert.alert('Exists', 'An instructor account with this email is already registered.');
+        } else {
+          throw error;
+        }
+      } else {
+        Alert.alert('Success', `Instructor account created for ${name}.\nInitial password is: teacher123`);
+        setStaffEmail('');
+        setStaffName('');
+        fetchStaff();
+      }
     } catch (err: any) {
       Alert.alert('Database Error', err.message || 'Could not add instructor.');
     } finally {
@@ -196,26 +246,53 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
     }
   };
 
-  const handleDeleteStaff = async (email: string) => {
-    Alert.alert('Confirm Delete', `Remove approval for ${email}?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            const { error } = await supabase.from('approved_instructors').delete().eq('email', email);
-            if (error) throw error;
-            fetchStaff();
-          } catch (err: any) {
-            Alert.alert('Error', err.message || 'Could not delete instructor.');
-          }
-        },
-      },
-    ]);
+  // 3. Admin Changing Own Password
+  const handleChangeOwnPassword = async () => {
+    if (newPassword.length < 6) {
+      Alert.alert('Weak Password', 'Password must be at least 6 characters.');
+      return;
+    }
+
+    setChangingPassword(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+      if (error) throw error;
+      Alert.alert('Success', 'Your password has been changed successfully.');
+      setNewPassword('');
+    } catch (err: any) {
+      Alert.alert('Failed', err.message || 'Could not change password.');
+    } finally {
+      setChangingPassword(false);
+    }
   };
 
-  // 3. Principal Signature Upload Handler
+  // 4. Admin Resetting a User's Password
+  const handleResetUserPassword = async () => {
+    if (!resetUser || resetPasswordVal.length < 6) {
+      Alert.alert('Validation Error', 'Password must be at least 6 characters.');
+      return;
+    }
+
+    setResettingUserPw(true);
+    try {
+      const { data, error } = await supabase.rpc('reset_user_password', {
+        p_user_id: resetUser.id,
+        p_new_password: resetPasswordVal,
+      });
+
+      if (error) throw error;
+
+      Alert.alert('Success', `Password reset successfully for ${resetUser.name}.`);
+      setResetUser(null);
+      setResetPasswordVal('');
+    } catch (err: any) {
+      Alert.alert('Reset Failed', err.message || 'Could not reset password.');
+    } finally {
+      setResettingUserPw(false);
+    }
+  };
+
+  // 5. Principal Signature Upload Handler
   const handleUploadPrincipalSig = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
@@ -304,7 +381,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             <View style={THEME.glassCard}>
               <Text style={THEME.cardTitle}>Student Roster Bulk Import</Text>
               <Text style={styles.description}>
-                Pre-approve students by uploading an Excel sheet. Column Headers required: `Name`, `Class`, `Section`, `Mobile No`, `Parent Email`.
+                Upload student Excel sheets. It will automatically create login user accounts with their registered Mobile Number as initial password.
               </Text>
 
               <TouchableOpacity style={styles.filePickerBox} onPress={handleSelectExcel}>
@@ -320,7 +397,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                 <View style={styles.previewContainer}>
                   <Text style={styles.previewTitle}>Roster File Preview</Text>
                   <Text style={styles.previewText}>
-                    Ready to upload **{parsedRoster.length}** student profiles.
+                    Ready to generate **{parsedRoster.length}** student accounts.
                   </Text>
 
                   {rosterErrors.length > 0 && (
@@ -331,9 +408,6 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                           • Row {err.row}: {err.message}
                         </Text>
                       ))}
-                      {rosterErrors.length > 5 && (
-                        <Text style={styles.errorText}>...and {rosterErrors.length - 5} more.</Text>
-                      )}
                     </View>
                   )}
 
@@ -345,7 +419,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                     {importing ? (
                       <ActivityIndicator color="#FFFFFF" />
                     ) : (
-                      <Text style={THEME.btnPrimaryText}>Pre-approve Students list</Text>
+                      <Text style={THEME.btnPrimaryText}>Create Student Accounts</Text>
                     )}
                   </TouchableOpacity>
                 </View>
@@ -354,25 +428,37 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
               {importLogs ? (
                 <View style={styles.logsBox}>
                   <Text style={styles.logsTitle}>Roster logs:</Text>
-                  <Text style={styles.logsText}>{importLogs}</Text>
+                  <ScrollView style={{ maxHeight: 150 }}>
+                    <Text style={styles.logsText}>{importLogs}</Text>
+                  </ScrollView>
                 </View>
               ) : null}
             </View>
 
             {/* Approved Students List */}
-            <Text style={styles.sectionHeader}>Approved Roster List</Text>
+            <Text style={styles.sectionHeader}>Active Student Roster List</Text>
             {loadingStudents ? (
               <ActivityIndicator size="small" color={COLORS.secondary} style={{ marginVertical: 20 }} />
-            ) : approvedStudents.length === 0 ? (
+            ) : studentsList.length === 0 ? (
               <Text style={styles.emptyText}>Roster is empty. Import a roster sheet above.</Text>
             ) : (
-              approvedStudents.map((st, idx) => (
+              studentsList.map((st, idx) => (
                 <View key={idx} style={[THEME.glassCard, { marginVertical: 6 }]}>
-                  <Text style={styles.itemName}>{st.name}</Text>
-                  <Text style={styles.itemMeta}>
-                    Grade {st.class} - Sec {st.section} | Mobile: {st.mobile_no}
-                  </Text>
-                  <Text style={styles.itemSubMeta}>Parent Email: {st.parent_email}</Text>
+                  <View style={THEME.rowBetween}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.itemName}>{st.name}</Text>
+                      <Text style={styles.itemMeta}>
+                        Grade {st.class} - Sec {st.section} | Mobile: {st.mobile_no}
+                      </Text>
+                      <Text style={styles.itemSubMeta}>Parent Email: {st.parent_email}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.resetBtn}
+                      onPress={() => setResetUser(st)}
+                    >
+                      <Text style={styles.resetBtnText}>Reset Pw</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               ))
             )}
@@ -385,7 +471,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
             <View style={THEME.glassCard}>
               <Text style={THEME.cardTitle}>Add Approved Instructor</Text>
               <Text style={styles.description}>
-                Authorize an email address to register with the Class Teacher/Instructor role.
+                Creates an instructor account. Initial login password will be set to: `teacher123`
               </Text>
 
               <Text style={THEME.label}>Instructor Full Name</Text>
@@ -397,7 +483,7 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
                 onChangeText={setStaffName}
               />
 
-              <Text style={THEME.label}>Authorized Email Address</Text>
+              <Text style={THEME.label}>Instructor Email Address</Text>
               <TextInput
                 style={THEME.input}
                 placeholder="teacher@school.edu"
@@ -409,28 +495,28 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
               />
 
               <TouchableOpacity style={THEME.btnPrimary} onPress={handleAddStaff} disabled={savingStaff}>
-                {savingStaff ? <ActivityIndicator color="#FFFFFF" /> : <Text style={THEME.btnPrimaryText}>Pre-approve Staff</Text>}
+                {savingStaff ? <ActivityIndicator color="#FFFFFF" /> : <Text style={THEME.btnPrimaryText}>Create Staff Account</Text>}
               </TouchableOpacity>
             </View>
 
             {/* Staff List */}
-            <Text style={styles.sectionHeader}>Approved Staff Members</Text>
+            <Text style={styles.sectionHeader}>Active Staff Members</Text>
             {loadingStaff ? (
               <ActivityIndicator size="small" color={COLORS.secondary} style={{ marginVertical: 20 }} />
-            ) : approvedInstructors.length === 0 ? (
-              <Text style={styles.emptyText}>No instructors approved yet.</Text>
+            ) : instructorsList.length === 0 ? (
+              <Text style={styles.emptyText}>No instructors registered yet.</Text>
             ) : (
-              approvedInstructors.map((inst, idx) => (
+              instructorsList.map((inst, idx) => (
                 <View key={idx} style={[THEME.glassCard, styles.staffItem]}>
-                  <View>
+                  <View style={{ flex: 1 }}>
                     <Text style={styles.itemName}>{inst.name}</Text>
-                    <Text style={styles.itemMeta}>Email: {inst.email}</Text>
+                    <Text style={styles.itemMeta}>Role: Class Instructor</Text>
                   </View>
                   <TouchableOpacity
-                    style={styles.deleteBtn}
-                    onPress={() => handleDeleteStaff(inst.email)}
+                    style={styles.resetBtn}
+                    onPress={() => setResetUser(inst)}
                   >
-                    <Text style={styles.deleteBtnText}>Remove</Text>
+                    <Text style={styles.resetBtnText}>Reset Pw</Text>
                   </TouchableOpacity>
                 </View>
               ))
@@ -440,41 +526,110 @@ export default function AdminDashboard({ session, onLogout }: AdminDashboardProp
 
         {/* TAB 3: Global Settings */}
         {activeTab === 'settings' && (
-          <View style={THEME.glassCard}>
-            <Text style={THEME.cardTitle}>Global Principal Signature Settings</Text>
-            <Text style={styles.description}>
-              Upload the school principal's signature image file (PNG/JPEG). This image will render globally in the Principal signature block at the bottom of every student report card.
-            </Text>
+          <View>
+            {/* Principal Signature Settings */}
+            <View style={THEME.glassCard}>
+              <Text style={THEME.cardTitle}>Global Principal Signature Settings</Text>
+              <Text style={styles.description}>
+                Upload the school principal's signature image file (PNG/JPEG) to Cloudinary. It will render at the bottom of every student report card.
+              </Text>
 
-            <View style={styles.sigPreviewBox}>
-              <Text style={styles.previewLabel}>Current Registered Signature:</Text>
-              {principalSig ? (
-                <Image
-                  source={{ uri: principalSig }}
-                  style={styles.sigImagePreview}
-                  resizeMode="contain"
-                />
-              ) : (
-                <View style={styles.sigImagePlaceholder}>
-                  <Text style={styles.placeholderText}>No Signature Configured</Text>
-                </View>
-              )}
+              <View style={styles.sigPreviewBox}>
+                <Text style={styles.previewLabel}>Current Registered Signature:</Text>
+                {principalSig ? (
+                  <Image
+                    source={{ uri: principalSig }}
+                    style={styles.sigImagePreview}
+                    resizeMode="contain"
+                  />
+                ) : (
+                  <View style={styles.sigImagePlaceholder}>
+                    <Text style={styles.placeholderText}>No Signature Configured</Text>
+                  </View>
+                )}
+              </View>
+
+              <TouchableOpacity
+                style={THEME.btnPrimary}
+                onPress={handleUploadPrincipalSig}
+                disabled={uploadingSig}
+              >
+                {uploadingSig ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={THEME.btnPrimaryText}>Upload Signature Image</Text>
+                )}
+              </TouchableOpacity>
             </View>
 
-            <TouchableOpacity
-              style={THEME.btnPrimary}
-              onPress={handleUploadPrincipalSig}
-              disabled={uploadingSig}
-            >
-              {uploadingSig ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <Text style={THEME.btnPrimaryText}>Upload Signature Image</Text>
-              )}
-            </TouchableOpacity>
+            {/* Password Change Settings */}
+            <View style={THEME.glassCard}>
+              <Text style={THEME.cardTitle}>Change Admin Password</Text>
+              <Text style={THEME.label}>New Admin Password</Text>
+              <TextInput
+                style={THEME.input}
+                placeholder="••••••••"
+                placeholderTextColor={COLORS.textMuted}
+                secureTextEntry
+                value={newPassword}
+                onChangeText={setNewPassword}
+              />
+              <TouchableOpacity
+                style={THEME.btnPrimary}
+                onPress={handleChangeOwnPassword}
+                disabled={changingPassword}
+              >
+                {changingPassword ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={THEME.btnPrimaryText}>Change Password</Text>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
         )}
       </ScrollView>
+
+      {/* Reset password Modal */}
+      <Modal visible={resetUser !== null} animationType="fade" transparent>
+        <View style={styles.modalBg}>
+          <View style={styles.modalContent}>
+            <View style={THEME.rowBetween}>
+              <View>
+                <Text style={styles.modalTitle}>Reset User Password</Text>
+                <Text style={styles.modalSubtitle}>{resetUser?.name}</Text>
+              </View>
+              <TouchableOpacity onPress={() => setResetUser(null)}>
+                <Text style={styles.closeText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ marginTop: 20 }}>
+              <Text style={THEME.label}>Specify New Password</Text>
+              <TextInput
+                style={THEME.input}
+                placeholder="Enter at least 6 characters"
+                placeholderTextColor={COLORS.textMuted}
+                secureTextEntry
+                value={resetPasswordVal}
+                onChangeText={setResetPasswordVal}
+              />
+
+              <TouchableOpacity
+                style={THEME.btnPrimary}
+                onPress={handleResetUserPassword}
+                disabled={resettingUserPw}
+              >
+                {resettingUserPw ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={THEME.btnPrimaryText}>Override Password</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -659,16 +814,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginVertical: 6,
   },
-  deleteBtn: {
+  resetBtn: {
     paddingVertical: 6,
     paddingHorizontal: 12,
     borderRadius: 6,
-    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    backgroundColor: 'rgba(0, 229, 255, 0.12)',
     borderWidth: 1,
-    borderColor: COLORS.danger,
+    borderColor: COLORS.secondary,
   },
-  deleteBtnText: {
-    color: COLORS.danger,
+  resetBtnText: {
+    color: COLORS.secondary,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -703,5 +858,37 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textMuted,
     fontStyle: 'italic',
+  },
+  modalBg: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalContent: {
+    backgroundColor: COLORS.background,
+    borderRadius: 20,
+    width: '100%',
+    maxWidth: 400,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: COLORS.cardBorder,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#FFFFFF',
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    color: COLORS.secondary,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  closeText: {
+    color: COLORS.danger,
+    fontWeight: '700',
+    fontSize: 14,
   },
 });

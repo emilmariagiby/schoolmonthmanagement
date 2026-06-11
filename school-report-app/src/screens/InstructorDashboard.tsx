@@ -69,6 +69,28 @@ export default function InstructorDashboard({ session, onLogout }: InstructorDas
   // Signature Upload State
   const [uploadingSig, setUploadingSig] = useState<boolean>(false);
 
+  // Change Password State
+  const [newPasswordVal, setNewPasswordVal] = useState<string>('');
+  const [changingPw, setChangingPw] = useState<boolean>(false);
+
+  const handleUpdatePassword = async () => {
+    if (newPasswordVal.length < 6) {
+      Alert.alert('Validation Error', 'Password must be at least 6 characters.');
+      return;
+    }
+    setChangingPw(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPasswordVal });
+      if (error) throw error;
+      Alert.alert('Success', 'Your password has been changed successfully!');
+      setNewPasswordVal('');
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not update password.');
+    } finally {
+      setChangingPw(false);
+    }
+  };
+
   useEffect(() => {
     fetchInstructorData();
     fetchStudents();
@@ -563,39 +585,69 @@ export default function InstructorDashboard({ session, onLogout }: InstructorDas
 
           {/* TAB 3: Signature Image Upload */}
           {activeTab === 'signature' && (
-            <View style={THEME.glassCard}>
-              <Text style={THEME.cardTitle}>Class Teacher Signature Manager</Text>
-              <Text style={styles.description}>
-                Upload an image of your signature (PNG or JPEG format). This signature will be attached automatically to the bottom of all student report cards that you fill out.
-              </Text>
+            <>
+              <View style={THEME.glassCard}>
+                <Text style={THEME.cardTitle}>Class Teacher Signature Manager</Text>
+                <Text style={styles.description}>
+                  Upload an image of your signature (PNG or JPEG format). This signature will be attached automatically to the bottom of all student report cards that you fill out.
+                </Text>
 
-              <View style={styles.signaturePreviewBox}>
-                <Text style={styles.previewLabel}>Current Registered Signature:</Text>
-                {instructorProfile?.signature_url ? (
-                  <Image
-                    source={{ uri: instructorProfile.signature_url }}
-                    style={styles.sigImagePreview}
-                    resizeMode="contain"
-                  />
-                ) : (
-                  <View style={styles.sigImagePlaceholder}>
-                    <Text style={styles.placeholderText}>No Signature Uploaded Yet</Text>
-                  </View>
-                )}
+                <View style={styles.signaturePreviewBox}>
+                  <Text style={styles.previewLabel}>Current Registered Signature:</Text>
+                  {instructorProfile?.signature_url ? (
+                    <Image
+                      source={{ uri: instructorProfile.signature_url }}
+                      style={styles.sigImagePreview}
+                      resizeMode="contain"
+                    />
+                  ) : (
+                    <View style={styles.sigImagePlaceholder}>
+                      <Text style={styles.placeholderText}>No Signature Uploaded Yet</Text>
+                    </View>
+                  )}
+                </View>
+
+                <TouchableOpacity
+                  style={THEME.btnPrimary}
+                  onPress={handleUploadSignature}
+                  disabled={uploadingSig}
+                >
+                  {uploadingSig ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Text style={THEME.btnPrimaryText}>Upload Signature Image</Text>
+                  )}
+                </TouchableOpacity>
               </View>
-
-              <TouchableOpacity
-                style={THEME.btnPrimary}
-                onPress={handleUploadSignature}
-                disabled={uploadingSig}
-              >
-                {uploadingSig ? (
-                  <ActivityIndicator color="#FFFFFF" />
-                ) : (
-                  <Text style={THEME.btnPrimaryText}>Upload Signature Image</Text>
-                )}
-              </TouchableOpacity>
-            </View>
+              
+              {/* Change Password Card */}
+              <View style={THEME.glassCard}>
+                <Text style={THEME.cardTitle}>Change Account Password</Text>
+                <Text style={styles.description}>
+                  Update your login password. Must be at least 6 characters.
+                </Text>
+                <Text style={THEME.label}>Choose New Password</Text>
+                <TextInput
+                  style={THEME.input}
+                  placeholder="••••••••"
+                  placeholderTextColor={COLORS.textMuted}
+                  secureTextEntry
+                  value={newPasswordVal}
+                  onChangeText={setNewPasswordVal}
+                />
+                <TouchableOpacity
+                  style={THEME.btnPrimary}
+                  onPress={handleUpdatePassword}
+                  disabled={changingPw}
+                >
+                  {changingPw ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <Text style={THEME.btnPrimaryText}>Change Password</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </>
           )}
         </ScrollView>
       )}

@@ -9,7 +9,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Alert,
 } from 'react-native';
 import { supabase } from '../lib/supabaseClient';
 import { COLORS, THEME } from '../theme';
@@ -20,12 +19,10 @@ interface AuthScreenProps {
 
 export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
   const [isStudent, setIsStudent] = useState<boolean>(true);
-  const [isRegisterMode, setIsRegisterMode] = useState<boolean>(false);
   
   // Input States
   const [email, setEmail] = useState<string>('');
   const [mobileNo, setMobileNo] = useState<string>('');
-  const [name, setName] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   
   // Loading & Error States
@@ -47,7 +44,7 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
         }
         loginEmail = `${cleanMobile}@school.report`;
       } else {
-        const cleanEmail = email.trim();
+        const cleanEmail = email.trim().toLowerCase();
         if (!cleanEmail) {
           setErrorMsg('Please enter your email.');
           setLoading(false);
@@ -69,7 +66,7 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
 
       if (error) {
         if (error.message.includes('Invalid login credentials')) {
-          setErrorMsg('Invalid credentials. If you are logging in for the first time, click "Activate Account" below.');
+          setErrorMsg('Invalid login details. Initial student passwords are set to their registered Mobile Number.');
         } else {
           setErrorMsg(error.message);
         }
@@ -78,79 +75,6 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
       }
     } catch (err: any) {
       setErrorMsg(err.message || 'An unexpected error occurred.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleActivate = async () => {
-    setErrorMsg('');
-    setLoading(true);
-
-    try {
-      let signupEmail = '';
-      let metadata: any = {};
-
-      if (isStudent) {
-        const cleanMobile = mobileNo.trim();
-        const cleanName = name.trim();
-        
-        if (!cleanMobile || !cleanName) {
-          setErrorMsg('Please enter both your name and registered mobile number.');
-          setLoading(false);
-          return;
-        }
-        signupEmail = `${cleanMobile}@school.report`;
-        metadata = {
-          role: 'student',
-          mobile_no: cleanMobile,
-          name: cleanName,
-        };
-      } else {
-        const cleanEmail = email.trim().toLowerCase();
-        if (!cleanEmail) {
-          setErrorMsg('Please enter your authorized staff email.');
-          setLoading(false);
-          return;
-        }
-        signupEmail = cleanEmail;
-        metadata = {
-          role: 'instructor',
-        };
-      }
-
-      if (password.length < 6) {
-        setErrorMsg('Password must be at least 6 characters long.');
-        setLoading(false);
-        return;
-      }
-
-      // Supabase signup handles triggering validation against rosters in database
-      const { data, error } = await supabase.auth.signUp({
-        email: signupEmail,
-        password: password,
-        options: {
-          data: metadata,
-        },
-      });
-
-      if (error) {
-        setErrorMsg(error.message);
-      } else if (data?.user) {
-        // If registration triggers require confirmation (usually standard default config), warn user.
-        // If it auto-logs in, route user.
-        if (data.session) {
-          onLoginSuccess(data.session);
-        } else {
-          Alert.alert(
-            'Activation Success',
-            'Your account has been activated! You can now log in using your credentials.',
-            [{ text: 'OK', onPress: () => setIsRegisterMode(false) }]
-          );
-        }
-      }
-    } catch (err: any) {
-      setErrorMsg(err.message || 'An error occurred during activation.');
     } finally {
       setLoading(false);
     }
@@ -195,13 +119,7 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
           </View>
 
           <Text style={styles.cardHeader}>
-            {isRegisterMode
-              ? isStudent
-                ? 'Activate Student / Parent Account'
-                : 'Activate School Staff Account'
-              : isStudent
-              ? 'Sign in as Student / Parent'
-              : 'Sign in as Instructor / Admin'}
+            {isStudent ? 'Sign in as Student / Parent' : 'Sign in as Instructor / Admin'}
           </Text>
 
           {errorMsg ? (
@@ -209,20 +127,6 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
               <Text style={styles.errorText}>{errorMsg}</Text>
             </View>
           ) : null}
-
-          {/* Activation Only: Roster Name Check */}
-          {isRegisterMode && isStudent && (
-            <>
-              <Text style={THEME.label}>Student Full Name (Must match Roster)</Text>
-              <TextInput
-                style={THEME.input}
-                placeholder="Enter student's exact name"
-                placeholderTextColor={COLORS.textMuted}
-                value={name}
-                onChangeText={setName}
-              />
-            </>
-          )}
 
           {isStudent ? (
             <>
@@ -252,7 +156,7 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
             </>
           )}
 
-          <Text style={THEME.label}>{isRegisterMode ? 'Create Password' : 'Password'}</Text>
+          <Text style={THEME.label}>Password</Text>
           <TextInput
             style={THEME.input}
             placeholder="••••••••"
@@ -265,38 +169,21 @@ export default function AuthScreen({ onLoginSuccess }: AuthScreenProps) {
 
           <TouchableOpacity
             style={[THEME.btnPrimary, loading && styles.disabledBtn]}
-            onPress={isRegisterMode ? handleActivate : handleLogin}
+            onPress={handleLogin}
             disabled={loading}
           >
             {loading ? (
               <ActivityIndicator color="#FFFFFF" />
             ) : (
-              <Text style={THEME.btnPrimaryText}>
-                {isRegisterMode ? 'Activate Account' : 'Secure Sign In'}
-              </Text>
+              <Text style={THEME.btnPrimaryText}>Secure Sign In</Text>
             )}
-          </TouchableOpacity>
-
-          {/* Registration Toggle Footer */}
-          <TouchableOpacity
-            style={styles.modeToggle}
-            onPress={() => {
-              setIsRegisterMode(!isRegisterMode);
-              setErrorMsg('');
-            }}
-          >
-            <Text style={styles.modeToggleText}>
-              {isRegisterMode
-                ? 'Already activated? Sign In here'
-                : 'First time logging in? Activate Account'}
-            </Text>
           </TouchableOpacity>
         </View>
 
         <View style={styles.footerContainer}>
           <Text style={styles.footerText}>Highly Secure Connection</Text>
           <Text style={styles.footerSubText}>
-            Protected by Row Level Security (RLS) & Gatekeeper Roster Val
+            Protected by Row Level Security (RLS) & JWT Authentication
           </Text>
         </View>
       </ScrollView>
@@ -374,15 +261,6 @@ const styles = StyleSheet.create({
   },
   disabledBtn: {
     opacity: 0.7,
-  },
-  modeToggle: {
-    alignItems: 'center',
-    marginTop: 20,
-  },
-  modeToggleText: {
-    color: COLORS.secondary,
-    fontSize: 13,
-    fontWeight: '600',
   },
   footerContainer: {
     alignItems: 'center',

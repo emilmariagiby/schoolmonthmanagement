@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Image,
   Alert,
+  TextInput,
 } from 'react-native';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -34,6 +35,30 @@ export default function StudentDashboard({ session, onLogout }: StudentDashboard
   const [principalSig, setPrincipalSig] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [exporting, setExporting] = useState<boolean>(false);
+  
+  // Change Password State
+  const [showChangePw, setShowChangePw] = useState<boolean>(false);
+  const [newPasswordVal, setNewPasswordVal] = useState<string>('');
+  const [changingPw, setChangingPw] = useState<boolean>(false);
+
+  const handleUpdatePassword = async () => {
+    if (newPasswordVal.length < 6) {
+      Alert.alert('Validation Error', 'Password must be at least 6 characters.');
+      return;
+    }
+    setChangingPw(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPasswordVal });
+      if (error) throw error;
+      Alert.alert('Success', 'Your password has been changed successfully!');
+      setNewPasswordVal('');
+      setShowChangePw(false);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not update password.');
+    } finally {
+      setChangingPw(false);
+    }
+  };
 
   useEffect(() => {
     fetchData();
@@ -441,6 +466,39 @@ export default function StudentDashboard({ session, onLogout }: StudentDashboard
                     <Text style={styles.sigName}>(Principal Settings)</Text>
                   </View>
                 </View>
+              </View>
+
+              {/* Change Password Collapsible */}
+              <View style={[THEME.glassCard, { marginTop: 0, marginBottom: 15 }]}>
+                <TouchableOpacity onPress={() => setShowChangePw(!showChangePw)}>
+                  <Text style={[THEME.cardTitle, { marginBottom: showChangePw ? 12 : 0, color: COLORS.secondary }]}>
+                    {showChangePw ? 'Hide Settings' : 'Account Security (Change Password)'}
+                  </Text>
+                </TouchableOpacity>
+                {showChangePw && (
+                  <View style={{ marginTop: 6 }}>
+                    <Text style={THEME.label}>Choose New Password</Text>
+                    <TextInput
+                      style={THEME.input}
+                      placeholder="••••••••"
+                      placeholderTextColor={COLORS.textMuted}
+                      secureTextEntry
+                      value={newPasswordVal}
+                      onChangeText={setNewPasswordVal}
+                    />
+                    <TouchableOpacity
+                      style={THEME.btnSecondary}
+                      onPress={handleUpdatePassword}
+                      disabled={changingPw}
+                    >
+                      {changingPw ? (
+                        <ActivityIndicator color={COLORS.secondary} />
+                      ) : (
+                        <Text style={THEME.btnSecondaryText}>Update Password</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                )}
               </View>
 
               {/* Download/Share Report PDF */}
