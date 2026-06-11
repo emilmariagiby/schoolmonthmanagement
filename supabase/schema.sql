@@ -149,7 +149,6 @@ CREATE POLICY reports_delete_policy ON public.reports
         (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'admin'
     );
 
--- Trigger: Automatically create profile when a user registers in auth.users
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger AS $$
 DECLARE
@@ -159,14 +158,31 @@ DECLARE
     user_mobile TEXT;
     user_email TEXT;
 BEGIN
-    user_role := COALESCE(new.raw_user_meta_data->>'role', 'student');
-    user_mobile := new.raw_user_meta_data->>'mobile_no';
     user_email := new.email;
+    user_mobile := COALESCE(new.raw_user_meta_data->>'mobile_no', SPLIT_PART(user_email, '@', 1));
+    user_role := new.raw_user_meta_data->>'role';
 
-    -- Admin Bypass
+    -- 1. DYNAMIC ROLE INFERENCE
+    -- If no role is specified (e.g. dashboard signup), infer it from email & rosters
+    IF user_role IS NULL THEN
+        -- Check if email is in approved instructors
+        SELECT * INTO instructor_record FROM public.approved_instructors WHERE email = user_email;
+        IF FOUND THEN
+            user_role := 'instructor';
+        -- Check if it's the admin email
+        ELSIF user_email = 'admin@school.edu' OR user_email LIKE 'admin@%' THEN
+            user_role := 'admin';
+        ELSE
+            user_role := 'student';
+        END IF;
+    END IF;
+
+    -- 2. ROLE PROCESSING
+    -- Admin Flow
     IF user_role = 'admin' THEN
         INSERT INTO public.profiles (id, name, role, mobile_no)
-        VALUES (new.id, COALESCE(new.raw_user_meta_data->>'name', 'Admin User'), 'admin', user_mobile);
+        VALUES (new.id, COALESCE(new.raw_user_meta_data->>'name', 'Root Admin'), 'admin', user_mobile)
+        ON CONFLICT (id) DO NOTHING;
         RETURN NEW;
     END IF;
 
@@ -178,7 +194,8 @@ BEGIN
         END IF;
         
         INSERT INTO public.profiles (id, name, role)
-        VALUES (new.id, instructor_record.name, 'instructor');
+        VALUES (new.id, instructor_record.name, 'instructor')
+        ON CONFLICT (id) DO NOTHING;
         RETURN NEW;
     END IF;
 
@@ -198,7 +215,8 @@ BEGIN
             student_record.section, 
             student_record.mobile_no, 
             student_record.parent_email
-        );
+        )
+        ON CONFLICT (id) DO NOTHING;
         RETURN NEW;
     END IF;
 
