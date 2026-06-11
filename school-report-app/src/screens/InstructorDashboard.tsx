@@ -17,6 +17,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import { supabase } from '../lib/supabaseClient';
 import { COLORS, THEME, WINDOW_WIDTH } from '../theme';
 import { parsePerformanceReports, ParsedReport, ImportError } from '../utils/ExcelImportHelper';
+import { uploadToCloudinary } from '../utils/CloudinaryHelper';
 
 interface InstructorDashboardProps {
   session: any;
@@ -237,25 +238,7 @@ export default function InstructorDashboard({ session, onLogout }: InstructorDas
     setUploadingSig(true);
     try {
       const img = result.assets[0];
-      const fileName = `signature_${session.user.id}.png`;
-
-      // Read image URI as Blob
-      const response = await fetch(img.uri);
-      const blob = await response.blob();
-
-      // Upload file to Supabase signatures storage
-      const { data, error: uploadErr } = await supabase.storage
-        .from('signatures')
-        .upload(fileName, blob, {
-          contentType: 'image/png',
-          upsert: true,
-        });
-
-      if (uploadErr) throw uploadErr;
-
-      // Generate public image URL
-      const { data: urlData } = supabase.storage.from('signatures').getPublicUrl(fileName);
-      const publicUrl = urlData.publicUrl;
+      const publicUrl = await uploadToCloudinary(img.uri);
 
       // Save URL to profile
       const { error: dbErr } = await supabase
